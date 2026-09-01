@@ -300,7 +300,7 @@
 /* =====================================================================
    GANTI URL INI dengan Web App URL hasil Deploy Apps Script Anda
    ===================================================================== */
-const API_URL = "https://script.google.com/macros/s/AKfycbzFE81DZBxr1VEizkDMGKtMJ2BEBHHt4nHFWXOJ4mM1OMHyP4GBTwRRH1U0iXRumeIePQ/exec";
+const API_URL = "https://script.google.com/macros/s/AKfycbyt5i6Ah4gBSneGsJRWXZvd4tKeQrMXbJA2zibw9xFW3nNiaTgQv98-AA96u-btYsa0Iw/exec";
 
 let currentData = [];
 let currentCustomers = [];
@@ -450,12 +450,30 @@ function renderFinanceTable(){
       <td>${fmtDate(r.TGL_DUEDATE)}</td>
       <td class="num">${r.AGING===''?'-':r.AGING}</td>
       <td class="num">${fmtRp(r.TOTAL_TAGIHAN)}</td>
-      <td><button class="btn btn-ghost btn-sm" onclick="openFinanceModal('${r.ID}')">Edit</button></td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="openFinanceModal('${r.ID}')">Edit</button>
+        <button class="btn btn-ghost btn-sm" style="color:#B7302A; border-color:#F0C6C4" onclick="deleteEntryRow('${r.ID}','${(r.CUSTOMER||'').replace(/'/g,"")}')">Hapus</button>
+      </td>
     </tr>
   `).join('');
 }
 document.getElementById('searchBox').addEventListener('input', renderFinanceTable);
 document.getElementById('filterStatus').addEventListener('change', renderFinanceTable);
+
+async function deleteEntryRow(id, custName){
+  const ok = confirm(`Hapus data shipment "${custName}" ini? Tindakan ini tidak bisa dibatalkan.`);
+  if(!ok) return;
+  try{
+    const res = await apiGet('deleteEntry', {id});
+    if(res.ok){
+      toast('Data dihapus');
+      await loadFinanceTable();
+      await loadDashboard();
+    } else {
+      toast('Gagal menghapus: '+res.error);
+    }
+  }catch(err){ toast('Error: '+err.message); }
+}
 
 /* ---------------- MODAL EDIT FINANCE ---------------- */
 function openFinanceModal(id){
@@ -508,8 +526,11 @@ document.getElementById('financeForm').addEventListener('submit', async (e)=>{
 document.getElementById('entryForm').addEventListener('submit', async (e)=>{
   e.preventDefault();
   const form = e.target;
+  const submitBtn = form.querySelector('button[type="submit"]');
+  if(submitBtn.disabled) return; // cegah klik dobel
   const data = Object.fromEntries(new FormData(form).entries());
   const statusEl = document.getElementById('inputStatus');
+  submitBtn.disabled = true;
   statusEl.innerHTML = '<span class="spinner"></span> Menyimpan...';
   try{
     const res = await apiGet('addEntry', {payload: JSON.stringify(data)});
@@ -523,6 +544,7 @@ document.getElementById('entryForm').addEventListener('submit', async (e)=>{
       statusEl.textContent = 'Gagal: ' + res.error;
     }
   }catch(err){ statusEl.textContent = 'Error: ' + err.message; }
+  submitBtn.disabled = false;
 });
 
 /* ---------------- INIT ---------------- */

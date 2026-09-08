@@ -1,314 +1,619 @@
-/**
- * ========================================================
- *  TML FINANCE HUB — Backend (Google Apps Script)
- *  Database: Google Sheets (sheet "DAILY REPORT" & "MASTER_CUSTOMER")
- * ========================================================
- *  CARA PASANG:
- *  1. Buka https://sheets.google.com -> buat spreadsheet baru, beri nama "TML Finance Hub DB"
- *  2. Extensions > Apps Script -> hapus isi default, paste seluruh file ini
- *  3. Klik Deploy > New deployment > pilih "Web app"
- *       - Execute as: Me
- *       - Who has access: Anyone
- *  4. Copy "Web app URL" -> tempel ke variabel API_URL di index.html
- *  5. Jalankan fungsi setup() sekali dari editor (klik Run) untuk membuat sheet & header otomatis
- * ========================================================
- */
-
-const SHEET_NAME = 'DAILY REPORT';
-const MASTER_SHEET = 'MASTER_CUSTOMER';
-
-// Urutan kolom di sheet DAILY REPORT (baris 1 = header)
-const COLS = [
-  'ID', 'NO', 'BOOKING_DATE', 'LOADING_DATE', 'NO_BL_DO', 'AJU', 'WO', 'CUSTOMER', 'TUJUAN',
-  'AREA', 'ZONA', 'TRANSPORTER', 'NOPOL', 'DRIVER_HP', 'SHIPMENT', 'SIZE', 'NO_CONTAINER',
-  'DEPO', 'PORT', 'REMARK', 'TARIF_VENDOR', 'TARIF_CUSTOMER', 'UJP', 'ADDITIONAL_COST',
-  'SURAT_JALAN', 'GROSS_MARGIN',
-  // -- Finance tracking --
-  'TOP_HARI', 'TGL_INVOICE_TERBIT', 'NO_INVOICE', 'TGL_KIRIM_INVOICE', 'MODE_KIRIM_INVOICE',
-  'TGL_DITERIMA_CUSTOMER', 'NILAI_REIMBURST', 'DPP_JASA', 'JUMLAH', 'PPN', 'TOTAL_TAGIHAN',
-  'TGL_DUEDATE', 'TGL_BAYAR', 'KETERANGAN',
-  // -- Kolom terhitung (dihitung ulang tiap request, tidak disimpan statis) --
-  'CREATED_AT'
-];
-
-/** Jalankan sekali manual dari editor Apps Script untuk inisialisasi sheet */
-function setup() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sh = ss.getSheetByName(SHEET_NAME);
-  if (!sh) sh = ss.insertSheet(SHEET_NAME);
-  if (sh.getLastRow() === 0) sh.appendRow(COLS);
-
-  let mc = ss.getSheetByName(MASTER_SHEET);
-  if (!mc) mc = ss.insertSheet(MASTER_SHEET);
-  if (mc.getLastRow() === 0) {
-    mc.appendRow(['CUSTOMER', 'DEFAULT_TOP_HARI']);
-    const defaults = [
-      ['PT. ANUGERAH TANGKAS TRANSPORTINDO (ATT)', 30],
-      ['PT. DRASENA AGRO NUSA', 30],
-      ['PT. IKS', 30],
-      ['PT. KAIXING INTERNATIONAL LOGISTICS', 30],
-      ['PT. NX LEMO INDONESIA', 30],
-      ['PT. SAMUDERA CARAKA JASA', 30],
-      ['PT. SEKAWAN SINERGI ABADI (SSA)', 30],
-      ['PT. SWADAYA TOTAL PRIMA', 30],
-      ['PT. TRANSPORINDO', 30],
-      ['PT. WINSON', 30],
-    ];
-    defaults.forEach(r => mc.appendRow(r));
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>TML Finance Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --navy:#12283F;
+    --navy-2:#1D3B5C;
+    --steel:#5C7691;
+    --amber:#E28321;
+    --amber-dark:#B96513;
+    --bg:#F3F4F2;
+    --card:#FFFFFF;
+    --line:#E1E4E3;
+    --ink:#16202B;
+    --ink-soft:#5B6672;
+    --green:#1E8E5A; --green-bg:#DFF3E7;
+    --blue:#2461A8; --blue-bg:#DEEAF7;
+    --yellow:#9A7B06; --yellow-bg:#FBF0CB;
+    --orange:#B85A18; --orange-bg:#FBE4CE;
+    --red:#B7302A; --red-bg:#FADEDC;
+    --gray:#5B6672; --gray-bg:#E7E9E8;
+    --radius:10px;
   }
-  Logger.log('Setup selesai.');
-}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:'Inter',system-ui,-apple-system,sans-serif; -webkit-font-smoothing:antialiased;}
+  ::selection{background:var(--amber);color:#fff}
 
-function getSheet_() {
-  return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
-}
-function getMasterSheet_() {
-  return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(MASTER_SHEET);
-}
-
-function num_(v) {
-  if (v === '' || v === null || v === undefined) return 0;
-  const n = Number(v);
-  return isNaN(n) ? 0 : n;
-}
-
-/** Ambil tanggal hari ini di zona waktu Jakarta (dinormalisasi ke tengah malam UTC agar perbandingan hari akurat) */
-function todayJakarta_() {
-  const s = Utilities.formatDate(new Date(), 'Asia/Jakarta', 'yyyy-MM-dd');
-  const [y, m, d] = s.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, d));
-}
-
-/** Normalisasi tanggal apapun (Date object dari Sheet, atau string "yyyy-mm-dd" dari form) ke tanggal kalender Jakarta */
-function toUTCDate_(v) {
-  if (!v) return null;
-  const d = new Date(v);
-  if (isNaN(d)) return null;
-  const s = Utilities.formatDate(d, 'Asia/Jakarta', 'yyyy-MM-dd');
-  const [y, m, day] = s.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, day));
-}
-
-function addDays_(date, days) {
-  const d = new Date(date);
-  d.setUTCDate(d.getUTCDate() + Number(days));
-  return d;
-}
-
-/** Hitung semua kolom turunan (gross margin, ppn, status barometer, aging, dst) */
-function computeDerived_(rec) {
-  const out = {};
-  out.GROSS_MARGIN = num_(rec.TARIF_CUSTOMER) - num_(rec.UJP);
-
-  const hasDpp = rec.DPP_JASA !== '' && rec.DPP_JASA !== undefined && rec.DPP_JASA !== null;
-  const jumlah = hasDpp ? num_(rec.DPP_JASA) + num_(rec.NILAI_REIMBURST) : '';
-  const ppn = hasDpp ? Math.round(num_(rec.DPP_JASA) * 0.011) : '';
-  const total = hasDpp ? jumlah + ppn : '';
-  out.JUMLAH = jumlah;
-  out.PPN = ppn;
-  out.TOTAL_TAGIHAN = total;
-
-  const today = todayJakarta_();
-
-  let duedate = null;
-  if (rec.TGL_INVOICE_TERBIT) {
-    const invDate = toUTCDate_(rec.TGL_INVOICE_TERBIT);
-    const top = rec.TOP_HARI;
-    if (top !== '' && top !== undefined && top !== null && !isNaN(Number(top))) {
-      duedate = addDays_(invDate, Number(top));
-    } else {
-      duedate = invDate; // mis. "CASH" -> jatuh tempo = tanggal invoice
-    }
+  header.top{
+    background:var(--navy); color:#fff; padding:18px 20px 16px;
+    position:sticky; top:0; z-index:20;
+    border-bottom:3px solid var(--amber);
   }
-  out.TGL_DUEDATE = duedate ? duedate : '';
-
-  // Tanggal bayar hanya dianggap valid (LUNAS) kalau sudah lewat / hari ini -- tanggal di masa depan diabaikan
-  let paidDate = null;
-  if (rec.TGL_BAYAR) {
-    const pd = toUTCDate_(rec.TGL_BAYAR);
-    if (pd && pd <= today) paidDate = pd;
+  .top-row{display:flex; align-items:center; justify-content:space-between; gap:12px}
+  .brand{display:flex; align-items:baseline; gap:9px}
+  .brand .mark{
+    width:9px;height:9px;background:var(--amber); display:inline-block; transform:rotate(45deg);
   }
+  .brand h1{font-size:17px; font-weight:800; letter-spacing:0.2px; margin:0}
+  .brand small{color:#B9C6D4; font-size:11.5px; font-weight:500}
+  .top-date{font-size:12px; color:#AEC0D1; font-variant-numeric:tabular-nums}
 
-  const remark = (rec.REMARK || '').toString().toUpperCase();
-  let status = '';
-  let aging = '';
+  nav.tabs{
+    display:flex; gap:2px; margin-top:14px; background:rgba(255,255,255,.08);
+    padding:3px; border-radius:9px;
+  }
+  nav.tabs button{
+    flex:1; background:transparent; border:0; color:#C7D3DE; font-family:inherit;
+    font-size:13px; font-weight:600; padding:9px 6px; border-radius:7px; cursor:pointer;
+    transition:background .15s, color .15s;
+  }
+  nav.tabs button.active{background:#fff; color:var(--navy)}
 
-  if (!remark) {
-    status = '';
-  } else if (remark.indexOf('CANCEL') >= 0) {
-    status = '⬜ N/A';
-  } else if (paidDate) {
-    status = '🟢 LUNAS';
-    aging = '-';
-  } else if (!rec.NO_INVOICE) {
-    status = '⚫ Belum Invoice';
-    // Aging = umur job sejak Booking Date, supaya kelihatan sudah berapa hari belum di-invoice
-    if (rec.BOOKING_DATE) {
-      const bd = toUTCDate_(rec.BOOKING_DATE);
-      if (bd) aging = Math.max(0, Math.round((today - bd) / 86400000));
-    }
-  } else if (!duedate) {
-    status = '🔵 TerInvoice';
+  main{max-width:1100px; margin:0 auto; padding:18px 16px 90px}
+  section{display:none}
+  section.active{display:block; animation:fade .18s ease}
+  @keyframes fade{from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:none}}
+
+  h2.section-title{font-size:15px; font-weight:700; margin:22px 0 10px; color:var(--navy)}
+  h2.section-title:first-child{margin-top:0}
+
+  /* KPI cards */
+  .kpi-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:10px}
+  @media(min-width:720px){.kpi-grid{grid-template-columns:repeat(5,1fr)}}
+  .kpi{
+    background:var(--card); border:1px solid var(--line); border-left:4px solid var(--navy);
+    border-radius:var(--radius); padding:14px 14px 12px;
+  }
+  .kpi.warn{border-left-color:var(--red)}
+  .kpi.mid{border-left-color:var(--orange)}
+  .kpi.ok{border-left-color:var(--green)}
+  .kpi.info{border-left-color:var(--gray)}
+  .kpi .label{font-size:11px; color:var(--ink-soft); font-weight:600; text-transform:uppercase; letter-spacing:.4px}
+  .kpi .value{font-size:21px; font-weight:800; margin-top:6px; font-variant-numeric:tabular-nums; color:var(--navy)}
+
+  /* status legend chips */
+  .chip{
+    display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+    font-size:12px; font-weight:600; white-space:nowrap;
+  }
+  .chip.st-lunas{background:var(--green-bg); color:var(--green)}
+  .chip.st-terinvoice{background:var(--blue-bg); color:var(--blue)}
+  .chip.st-mendekati{background:var(--yellow-bg); color:var(--yellow)}
+  .chip.st-ringan{background:var(--orange-bg); color:var(--orange)}
+  .chip.st-berat{background:var(--red-bg); color:var(--red)}
+  .chip.st-belum{background:var(--gray-bg); color:var(--gray)}
+  .chip.st-na{background:#EFEFEF; color:#9AA1A7}
+
+  table{width:100%; border-collapse:collapse; background:var(--card); border-radius:var(--radius); overflow:hidden;
+    border:1px solid var(--line)}
+  thead th{
+    background:var(--navy-2); color:#fff; font-size:11px; text-align:left; padding:9px 10px;
+    font-weight:600; white-space:nowrap;
+  }
+  tbody td{padding:9px 10px; font-size:13px; border-top:1px solid var(--line); white-space:nowrap}
+  tbody tr:hover{background:#FAFBFB}
+  .table-wrap{overflow-x:auto; border-radius:var(--radius)}
+  .num{font-variant-numeric:tabular-nums; text-align:right}
+
+  /* form */
+  form.card, .card{
+    background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px;
+  }
+  .grid2{display:grid; grid-template-columns:1fr; gap:12px}
+  @media(min-width:640px){.grid2{grid-template-columns:1fr 1fr}}
+  .field{display:flex; flex-direction:column; gap:5px}
+  .field label{font-size:12px; font-weight:600; color:var(--ink-soft)}
+  .field input, .field select, .field textarea{
+    font-family:inherit; font-size:14px; padding:9px 10px; border:1px solid #CCD3D8; border-radius:7px;
+    background:#fff; color:var(--ink);
+  }
+  .field input:focus, .field select:focus, .field textarea:focus{outline:2px solid var(--amber); outline-offset:1px; border-color:var(--amber)}
+  .field.span2{grid-column:1/-1}
+
+  .btn{
+    font-family:inherit; font-weight:700; font-size:14px; padding:11px 20px; border-radius:8px;
+    border:0; cursor:pointer; transition:transform .08s, opacity .15s;
+  }
+  .btn:active{transform:scale(.98)}
+  .btn-primary{background:var(--amber); color:#fff}
+  .btn-primary:hover{background:var(--amber-dark)}
+  .btn-ghost{background:transparent; color:var(--navy); border:1px solid var(--line)}
+  .btn-sm{padding:6px 12px; font-size:12.5px; border-radius:6px}
+
+  .toast{
+    position:fixed; bottom:22px; left:50%; transform:translateX(-50%) translateY(20px);
+    background:var(--navy); color:#fff; padding:11px 18px; border-radius:8px; font-size:13px;
+    font-weight:600; opacity:0; pointer-events:none; transition:all .25s; z-index:80; box-shadow:0 8px 22px rgba(0,0,0,.2);
+  }
+  .toast.show{opacity:1; transform:translateX(-50%) translateY(0)}
+
+  .modal-bg{
+    position:fixed; inset:0; background:rgba(18,40,63,.55); display:none; align-items:flex-end; justify-content:center; z-index:60;
+  }
+  .modal-bg.show{display:flex}
+  @media(min-width:720px){.modal-bg.show{align-items:center}}
+  .modal{
+    background:#fff; width:100%; max-width:560px; max-height:88vh; overflow-y:auto; border-radius:14px 14px 0 0; padding:20px;
+  }
+  @media(min-width:720px){.modal{border-radius:14px}}
+  .modal h3{margin:0 0 4px; font-size:16px; color:var(--navy)}
+  .modal .sub{font-size:12.5px; color:var(--ink-soft); margin-bottom:16px}
+  .modal-actions{display:flex; gap:10px; margin-top:18px; justify-content:flex-end}
+
+  .empty{padding:34px 16px; text-align:center; color:var(--ink-soft); font-size:13.5px}
+  .search-row{display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap}
+  .search-row input{flex:1; min-width:180px}
+
+  .badge-count{background:var(--amber); color:#fff; font-size:10.5px; font-weight:700; padding:1px 6px; border-radius:99px; margin-left:5px}
+  .spinner{width:16px;height:16px;border:2px solid rgba(0,0,0,.15); border-top-color:var(--amber); border-radius:50%; animation:spin .7s linear infinite; display:inline-block; vertical-align:-3px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="top-row">
+    <div class="brand">
+      <span class="mark"></span>
+      <h1>TML Finance Hub</h1>
+    </div>
+    <div class="top-date">
+      <span id="statusDot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#8A9AA8;margin-right:6px;vertical-align:1px"></span>
+      <span id="statusText">Menghubungkan...</span>
+      <span id="todayLabel" style="display:block; text-align:right; margin-top:2px"></span>
+    </div>
+  </div>
+  <small style="color:#AEC0D1; margin-left:18px; font-size:11.5px">PT. Tri Mandiri Logistik — Monitor Tagihan &amp; Cash Flow</small>
+  <nav class="tabs">
+    <button data-tab="dashboard" class="active">Dashboard</button>
+    <button data-tab="input">Input Harian</button>
+    <button data-tab="finance">Finance Tracking</button>
+  </nav>
+</header>
+
+<main>
+
+  <!-- ================= DASHBOARD ================= -->
+  <section id="tab-dashboard" class="active">
+    <h2 class="section-title">Ringkasan Piutang</h2>
+    <div class="kpi-grid" id="kpiGrid"></div>
+
+    <h2 class="section-title">Jumlah Shipment per Status</h2>
+    <div class="card" id="statusLegendWrap" style="display:flex; flex-wrap:wrap; gap:8px"></div>
+
+    <h2 class="section-title">Rekap per Customer</h2>
+    <div class="table-wrap">
+      <table id="custTable">
+        <thead><tr>
+          <th>Customer</th><th>Jml Job</th><th>Total Tagihan</th><th>Outstanding</th><th>Overdue Berat</th><th>Max Aging</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ================= INPUT HARIAN ================= -->
+  <section id="tab-input">
+    <h2 class="section-title">Input Shipment Harian (Admin Operasional)</h2>
+    <p style="font-size:13px; color:var(--ink-soft); margin-top:-4px">
+      Diisi begitu order confirm dari TML Order Hub. Status barometer otomatis dimulai dari <span class="chip st-belum">⚫ Belum Invoice</span>.
+    </p>
+    <form class="card" id="entryForm">
+      <div class="grid2">
+        <div class="field"><label>Booking Date</label><input type="date" name="BOOKING_DATE" required></div>
+        <div class="field"><label>Loading / Unloading Date</label><input type="date" name="LOADING_DATE"></div>
+        <div class="field"><label>No. BL / DO</label><input type="text" name="NO_BL_DO"></div>
+        <div class="field"><label>Customer</label>
+          <input list="customerList" name="CUSTOMER" required placeholder="Pilih / ketik customer">
+          <datalist id="customerList"></datalist>
+        </div>
+        <div class="field"><label>Tujuan</label><input type="text" name="TUJUAN"></div>
+        <div class="field"><label>Area</label><input type="text" name="AREA"></div>
+        <div class="field"><label>Transporter</label><input type="text" name="TRANSPORTER" value="TML"></div>
+        <div class="field"><label>Nopol</label><input type="text" name="NOPOL"></div>
+        <div class="field"><label>Driver / No. HP</label><input type="text" name="DRIVER_HP"></div>
+        <div class="field"><label>Shipment</label>
+          <select name="SHIPMENT"><option>IMPORT</option><option>EXPORT</option><option>DOMESTIK</option></select>
+        </div>
+        <div class="field"><label>Size</label>
+          <select name="SIZE"><option value="20'">20'</option><option value="40'">40'</option></select>
+        </div>
+        <div class="field"><label>No. Container</label><input type="text" name="NO_CONTAINER"></div>
+        <div class="field"><label>Tarif Vendor (Rp)</label><input type="number" name="TARIF_VENDOR"></div>
+        <div class="field"><label>Tarif Customer (Rp)</label><input type="number" name="TARIF_CUSTOMER"></div>
+        <div class="field"><label>UJP (Rp)</label><input type="number" name="UJP"></div>
+        <div class="field"><label>Additional Cost (Rp)</label><input type="number" name="ADDITIONAL_COST"></div>
+        <div class="field"><label>Remark</label>
+          <select name="REMARK"><option>DONE</option><option>PROSES</option><option>CANCEL BY CUSTOMER</option><option>CANCEL / TIDAK ADA UNIT</option></select>
+        </div>
+        <div class="field span2"><label>Keterangan tambahan</label><textarea name="KETERANGAN" rows="2"></textarea></div>
+      </div>
+      <div style="margin-top:16px; display:flex; gap:10px">
+        <button class="btn btn-primary" type="submit">Simpan Shipment</button>
+        <span id="inputStatus" style="font-size:13px; color:var(--ink-soft); align-self:center"></span>
+      </div>
+    </form>
+  </section>
+
+  <!-- ================= FINANCE TRACKING ================= -->
+  <section id="tab-finance">
+    <h2 class="section-title" style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px">
+      Finance Tracking — Tim Invoice &amp; Finance
+      <button class="btn btn-primary btn-sm" onclick="exportToExcel()">⬇ Download Excel</button>
+    </h2>
+    <div class="search-row">
+      <input type="text" id="searchBox" placeholder="Cari customer / no. container / no. invoice...">
+      <select id="filterStatus">
+        <option value="">Semua status</option>
+        <option value="⚫ Belum Invoice">⚫ Belum Invoice</option>
+        <option value="🔵 TerInvoice">🔵 TerInvoice</option>
+        <option value="🟡 Mendekati JT">🟡 Mendekati JT</option>
+        <option value="🟠 Overdue Ringan">🟠 Overdue Ringan</option>
+        <option value="🔴 Overdue Berat">🔴 Overdue Berat</option>
+        <option value="🟢 LUNAS">🟢 LUNAS</option>
+      </select>
+    </div>
+    <div class="table-wrap">
+      <table id="financeTable">
+        <thead><tr>
+          <th>Status</th><th>Customer</th><th>Container</th><th>Tarif Cust.</th><th>No. Invoice</th>
+          <th>Jatuh Tempo</th><th>Aging</th><th>Total Tagihan</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<!-- Modal edit finance -->
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3 id="modalTitle">Update Finance</h3>
+    <div class="sub" id="modalSub"></div>
+    <form id="financeForm">
+      <div class="grid2">
+        <div class="field"><label>TOP (Hari, atau isi "CASH")</label><input type="text" name="TOP_HARI"></div>
+        <div class="field"><label>Tgl Invoice Terbit</label><input type="date" name="TGL_INVOICE_TERBIT"></div>
+        <div class="field"><label>No. Invoice</label><input type="text" name="NO_INVOICE"></div>
+        <div class="field"><label>Tgl Kirim Invoice</label><input type="date" name="TGL_KIRIM_INVOICE"></div>
+        <div class="field"><label>Mode Kirim Invoice</label>
+          <select name="MODE_KIRIM_INVOICE"><option value="">-</option><option>Diantar</option><option>Via JNE</option><option>Titipan Paket</option></select>
+        </div>
+        <div class="field"><label>Tgl Diterima Customer</label><input type="date" name="TGL_DITERIMA_CUSTOMER"></div>
+        <div class="field"><label>Nilai Reimburst (Rp)</label><input type="number" name="NILAI_REIMBURST"></div>
+        <div class="field"><label>DPP Jasa (Rp)</label><input type="number" name="DPP_JASA"></div>
+        <div class="field"><label>Tgl Pembayaran Customer</label><input type="date" name="TGL_BAYAR"></div>
+        <div class="field span2"><label>Keterangan</label><textarea name="KETERANGAN" rows="2"></textarea></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost" id="modalCancel">Batal</button>
+        <button type="submit" class="btn btn-primary" id="modalSave">Simpan</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* =====================================================================
+   GANTI URL INI dengan Web App URL hasil Deploy Apps Script Anda
+   ===================================================================== */
+const API_URL = "https://script.google.com/macros/s/AKfycbyt5i6Ah4gBSneGsJRWXZvd4tKeQrMXbJA2zibw9xFW3nNiaTgQv98-AA96u-btYsa0Iw/exec";
+
+let currentData = [];
+let currentCustomers = [];
+
+function fmtRp(n){
+  if(n===''||n===null||n===undefined||isNaN(n)) return '-';
+  return 'Rp ' + Math.round(n).toLocaleString('id-ID');
+}
+function fmtDate(d){
+  if(!d) return '-';
+  const dt = new Date(d);
+  if(isNaN(dt)) return '-';
+  return dt.toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'});
+}
+function toISO(d){
+  if(!d) return '';
+  const dt = new Date(d);
+  if(isNaN(dt)) return '';
+  return dt.toISOString().slice(0,10);
+}
+function statusClass(s){
+  if(s==='🟢 LUNAS') return 'st-lunas';
+  if(s==='🔵 TerInvoice') return 'st-terinvoice';
+  if(s==='🟡 Mendekati JT') return 'st-mendekati';
+  if(s==='🟠 Overdue Ringan') return 'st-ringan';
+  if(s==='🔴 Overdue Berat') return 'st-berat';
+  if(s==='⚫ Belum Invoice') return 'st-belum';
+  return 'st-na';
+}
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2600);
+}
+
+function setOnlineStatus(online){
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  const now = new Date().toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'});
+  if(online){
+    dot.style.background = '#3ABE7A';
+    text.textContent = `Online · Tersimpan · ${now}`;
   } else {
-    const diffDays = Math.round((duedate - today) / 86400000);
-    if (diffDays >= 0) {
-      status = diffDays <= 7 ? '🟡 Mendekati JT' : '🔵 TerInvoice';
-      aging = 0;
+    dot.style.background = '#D9534F';
+    text.textContent = `Gagal terhubung · ${now}`;
+  }
+}
+
+/* --- JSONP request helper (menghindari CORS, sama seperti TML Order Hub) --- */
+let jsonpCounter = 0;
+function apiGet(action, params){
+  return new Promise((resolve, reject)=>{
+    const cbName = 'cb_' + (jsonpCounter++) + '_' + Date.now();
+    const timeout = setTimeout(()=>{
+      setOnlineStatus(false);
+      delete window[cbName];
+      script.remove();
+      reject(new Error('Timeout: server tidak merespon'));
+    }, 15000);
+    window[cbName] = (data)=>{
+      clearTimeout(timeout);
+      setOnlineStatus(!!data && data.ok !== false);
+      resolve(data);
+      delete window[cbName];
+      script.remove();
+    };
+    const qs = new URLSearchParams({action, callback: cbName, ...params});
+    const script = document.createElement('script');
+    script.src = API_URL + '?' + qs.toString();
+    script.onerror = ()=>{ clearTimeout(timeout); setOnlineStatus(false); reject(new Error('Gagal terhubung ke server')); };
+    document.body.appendChild(script);
+  });
+}
+
+/* ---------------- EXPORT EXCEL ---------------- */
+function exportToExcel(){
+  if(!currentData || currentData.length===0){ toast('Belum ada data untuk didownload'); return; }
+  const rows = currentData.map(r=>({
+    'Status': (r.STATUS_BAROMETER||'').replace(/[^\x00-\x7F]/g,'').trim(),
+    'Booking Date': fmtDate(r.BOOKING_DATE),
+    'Customer': r.CUSTOMER||'',
+    'No. Container': r.NO_CONTAINER||'',
+    'Tarif Customer': num_v(r.TARIF_CUSTOMER),
+    'No. Invoice': r.NO_INVOICE||'',
+    'Tgl Invoice Terbit': fmtDate(r.TGL_INVOICE_TERBIT),
+    'TOP (Hari)': r.TOP_HARI||'',
+    'Tgl Jatuh Tempo': fmtDate(r.TGL_DUEDATE),
+    'Aging (Hari)': r.AGING===''?'':r.AGING,
+    'DPP Jasa': num_v(r.DPP_JASA),
+    'Nilai Reimburst': num_v(r.NILAI_REIMBURST),
+    'PPN 1,1%': num_v(r.PPN),
+    'Total Tagihan': num_v(r.EFFECTIVE_VALUE),
+    'Tgl Bayar': fmtDate(r.TGL_BAYAR),
+    'Keterangan': r.KETERANGAN||'',
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = Object.keys(rows[0]).map(()=>({wch:16}));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Finance Tracking');
+  const today = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `TML_Finance_Tracking_${today}.xlsx`);
+  toast('File Excel sedang didownload...');
+}
+function num_v(v){ return (v===''||v===null||v===undefined||isNaN(v)) ? '' : Number(v); }
+
+/* ---------------- TABS ---------------- */
+document.querySelectorAll('nav.tabs button').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('main section').forEach(s=>s.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-'+btn.dataset.tab).classList.add('active');
+  });
+});
+
+document.getElementById('todayLabel').textContent = new Date().toLocaleDateString('id-ID',{weekday:'long', day:'2-digit', month:'long', year:'numeric'});
+
+/* ---------------- LOAD DASHBOARD ---------------- */
+async function loadDashboard(){
+  try{
+    const res = await apiGet('getDashboard', {});
+    if(!res.ok){ toast('Gagal memuat dashboard: '+res.error); return; }
+    const {kpi, perCustomer, statusCount} = res;
+    const kpiGrid = document.getElementById('kpiGrid');
+    kpiGrid.innerHTML = `
+      <div class="kpi"><div class="label">Total Tagihan</div><div class="value">${fmtRp(kpi.totalTagihan)}</div></div>
+      <div class="kpi warn"><div class="label">Outstanding</div><div class="value">${fmtRp(kpi.outstanding)}</div></div>
+      <div class="kpi mid"><div class="label">Overdue Berat</div><div class="value">${fmtRp(kpi.overdueBerat)}</div></div>
+      <div class="kpi info"><div class="label">Belum Invoice</div><div class="value">${kpi.belumInvoice} job</div></div>
+      <div class="kpi ok"><div class="label">Sudah Lunas</div><div class="value">${fmtRp(kpi.lunas)}</div></div>
+    `;
+    const legendWrap = document.getElementById('statusLegendWrap');
+    legendWrap.innerHTML = Object.entries(statusCount).map(([s,c])=>
+      `<span class="chip ${statusClass(s)}">${s}<span class="badge-count">${c}</span></span>`
+    ).join('');
+
+    const tbody = document.querySelector('#custTable tbody');
+    if(perCustomer.length===0){
+      tbody.innerHTML = `<tr><td colspan="6" class="empty">Belum ada data</td></tr>`;
     } else {
-      const over = -diffDays;
-      status = over <= 14 ? '🟠 Overdue Ringan' : '🔴 Overdue Berat';
-      aging = over;
+      tbody.innerHTML = perCustomer
+        .sort((a,b)=>b.outstanding-a.outstanding)
+        .map(c=>`<tr>
+          <td>${c.customer}</td>
+          <td class="num">${c.jumlahShipment}</td>
+          <td class="num">${fmtRp(c.totalTagihan)}</td>
+          <td class="num">${fmtRp(c.outstanding)}</td>
+          <td class="num">${fmtRp(c.overdueBerat)}</td>
+          <td class="num">${c.maxAging || '-'}</td>
+        </tr>`).join('');
     }
-  }
-  out.STATUS_BAROMETER = status;
-  out.AGING = aging;
-  // Nilai efektif untuk dashboard: pakai Total Tagihan asli kalau sudah diinvoice (DPP terisi),
-  // kalau belum, pakai estimasi dari Tarif Customer supaya nilainya tetap kelihatan di dashboard.
-  out.EFFECTIVE_VALUE = hasDpp ? total : num_(rec.TARIF_CUSTOMER);
-  return out;
+  }catch(err){ toast('Error: '+err.message); }
 }
 
-function rowToRecord_(headers, row) {
-  const rec = {};
-  headers.forEach((h, i) => { rec[h] = row[i] === undefined ? '' : row[i]; });
-  return rec;
-}
-
-/** Ambil semua data (dipakai untuk tabel Finance Tracking & Input) */
-function getData() {
-  const sh = getSheet_();
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return { ok: true, data: [] };
-  const headers = sh.getRange(1, 1, 1, COLS.length).getValues()[0];
-  const values = sh.getRange(2, 1, lastRow - 1, COLS.length).getValues();
-  const data = values
-    .filter(r => r[0] !== '') // skip baris kosong
-    .map(r => {
-      const rec = rowToRecord_(headers, r);
-      Object.assign(rec, computeDerived_(rec));
-      return rec;
-    });
-  return { ok: true, data: data };
-}
-
-function getCustomers() {
-  const mc = getMasterSheet_();
-  const lastRow = mc.getLastRow();
-  if (lastRow < 2) return { ok: true, customers: [] };
-  const values = mc.getRange(2, 1, lastRow - 1, 2).getValues();
-  return { ok: true, customers: values.map(r => ({ name: r[0], defaultTop: r[1] })) };
-}
-
-/** Ringkasan dashboard: KPI + rekap per customer */
-function getDashboard() {
-  const res = getData();
-  const rows = res.data;
-  const kpi = { totalTagihan: 0, outstanding: 0, overdueBerat: 0, belumInvoice: 0, lunas: 0 };
-  const perCustomer = {};
-
-  rows.forEach(r => {
-    const status = r.STATUS_BAROMETER;
-    const total = num_(r.EFFECTIVE_VALUE);
-    if (status && status !== '⬜ N/A') kpi.totalTagihan += total;
-    if (status && status !== '⬜ N/A' && status !== '🟢 LUNAS') kpi.outstanding += total;
-    if (status === '🔴 Overdue Berat') kpi.overdueBerat += total;
-    if (status === '⚫ Belum Invoice') kpi.belumInvoice += 1;
-    if (status === '🟢 LUNAS') kpi.lunas += total;
-
-    const cust = r.CUSTOMER || '(Tanpa Nama)';
-    if (!perCustomer[cust]) {
-      perCustomer[cust] = { customer: cust, jumlahShipment: 0, totalTagihan: 0, outstanding: 0, overdueBerat: 0, maxAging: 0 };
+/* ---------------- LOAD CUSTOMERS (autocomplete) ---------------- */
+async function loadCustomers(){
+  try{
+    const res = await apiGet('getCustomers', {});
+    if(res.ok){
+      currentCustomers = res.customers;
+      document.getElementById('customerList').innerHTML =
+        res.customers.map(c=>`<option value="${c.name}">`).join('');
     }
-    const pc = perCustomer[cust];
-    pc.jumlahShipment += 1;
-    if (status && status !== '⬜ N/A') pc.totalTagihan += total;
-    if (status && status !== '⬜ N/A' && status !== '🟢 LUNAS') pc.outstanding += total;
-    if (status === '🔴 Overdue Berat') pc.overdueBerat += total;
-    if (typeof r.AGING === 'number') pc.maxAging = Math.max(pc.maxAging, r.AGING);
-  });
-
-  const statusCount = {};
-  ['⚫ Belum Invoice', '🔵 TerInvoice', '🟡 Mendekati JT', '🟠 Overdue Ringan', '🔴 Overdue Berat', '🟢 LUNAS'].forEach(s => {
-    statusCount[s] = rows.filter(r => r.STATUS_BAROMETER === s).length;
-  });
-
-  return { ok: true, kpi: kpi, perCustomer: Object.values(perCustomer), statusCount: statusCount };
+  }catch(err){}
 }
 
-/** Tambah entry baru dari Admin Operasional (Input Harian) */
-function addEntry(data) {
-  const sh = getSheet_();
-  const id = Utilities.getUuid();
-  const lastRow = sh.getLastRow();
-  const no = lastRow; // baris ke-N sebagai nomor urut sederhana
-  const row = COLS.map(c => {
-    if (c === 'ID') return id;
-    if (c === 'NO') return no;
-    if (c === 'CREATED_AT') return new Date();
-    if (c === 'GROSS_MARGIN') return num_(data.TARIF_CUSTOMER) - num_(data.UJP);
-    return data[c] !== undefined ? data[c] : '';
-  });
-  sh.appendRow(row);
-  return { ok: true, id: id };
+/* ---------------- LOAD FINANCE TABLE ---------------- */
+async function loadFinanceTable(){
+  try{
+    const res = await apiGet('getData', {});
+    if(!res.ok){ toast('Gagal memuat data: '+res.error); return; }
+    currentData = res.data;
+    renderFinanceTable();
+  }catch(err){ toast('Error: '+err.message); }
 }
 
-/** Update kolom finance (dipakai tim invoice/finance) berdasarkan ID */
-function updateFinance(id, data) {
-  const sh = getSheet_();
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return { ok: false, error: 'Data kosong' };
-  const ids = sh.getRange(2, 1, lastRow - 1, 1).getValues().flat();
-  const idx = ids.indexOf(id);
-  if (idx === -1) return { ok: false, error: 'ID tidak ditemukan' };
-  const rowNum = idx + 2;
+function renderFinanceTable(){
+  const q = document.getElementById('searchBox').value.toLowerCase();
+  const filterStatus = document.getElementById('filterStatus').value;
+  const rows = currentData.filter(r=>{
+    if(filterStatus && r.STATUS_BAROMETER !== filterStatus) return false;
+    if(!q) return true;
+    return (r.CUSTOMER||'').toLowerCase().includes(q)
+      || (r.NO_CONTAINER||'').toLowerCase().includes(q)
+      || (r.NO_INVOICE||'').toLowerCase().includes(q);
+  });
+  const tbody = document.querySelector('#financeTable tbody');
+  if(rows.length===0){
+    tbody.innerHTML = `<tr><td colspan="9" class="empty">Tidak ada data yang cocok</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(r=>`
+    <tr>
+      <td><span class="chip ${statusClass(r.STATUS_BAROMETER)}">${r.STATUS_BAROMETER||'-'}</span></td>
+      <td>${r.CUSTOMER||'-'}</td>
+      <td>${r.NO_CONTAINER||'-'}</td>
+      <td class="num">${fmtRp(r.TARIF_CUSTOMER)}</td>
+      <td>${r.NO_INVOICE||'-'}</td>
+      <td>${fmtDate(r.TGL_DUEDATE)}</td>
+      <td class="num">${r.AGING===''?'-':r.AGING}</td>
+      <td class="num">${fmtRp(r.EFFECTIVE_VALUE)}</td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="openFinanceModal('${r.ID}')">Edit</button>
+        <button class="btn btn-ghost btn-sm" style="color:#B7302A; border-color:#F0C6C4" onclick="deleteEntryRow('${r.ID}','${(r.CUSTOMER||'').replace(/'/g,"")}')">Hapus</button>
+      </td>
+    </tr>
+  `).join('');
+}
+document.getElementById('searchBox').addEventListener('input', renderFinanceTable);
+document.getElementById('filterStatus').addEventListener('change', renderFinanceTable);
 
-  const editableFinanceCols = [
-    'TOP_HARI', 'TGL_INVOICE_TERBIT', 'NO_INVOICE', 'TGL_KIRIM_INVOICE', 'MODE_KIRIM_INVOICE',
-    'TGL_DITERIMA_CUSTOMER', 'NILAI_REIMBURST', 'DPP_JASA', 'TGL_BAYAR', 'KETERANGAN', 'REMARK'
-  ];
-  editableFinanceCols.forEach(c => {
-    if (data[c] !== undefined) {
-      const colIdx = COLS.indexOf(c) + 1;
-      sh.getRange(rowNum, colIdx).setValue(data[c]);
+async function deleteEntryRow(id, custName){
+  const ok = confirm(`Hapus data shipment "${custName}" ini? Tindakan ini tidak bisa dibatalkan.`);
+  if(!ok) return;
+  try{
+    const res = await apiGet('deleteEntry', {id});
+    if(res.ok){
+      toast('Data dihapus');
+      await loadFinanceTable();
+      await loadDashboard();
+    } else {
+      toast('Gagal menghapus: '+res.error);
     }
-  });
-  return { ok: true };
+  }catch(err){ toast('Error: '+err.message); }
 }
 
-/** Hapus 1 baris berdasarkan ID (dipakai tombol Hapus di Finance Tracking) */
-function deleteEntry(id) {
-  const sh = getSheet_();
-  const lastRow = sh.getLastRow();
-  if (lastRow < 2) return { ok: false, error: 'Data kosong' };
-  const ids = sh.getRange(2, 1, lastRow - 1, 1).getValues().flat();
-  const idx = ids.indexOf(id);
-  if (idx === -1) return { ok: false, error: 'ID tidak ditemukan' };
-  sh.deleteRow(idx + 2);
-  return { ok: true };
+/* ---------------- MODAL EDIT FINANCE ---------------- */
+function openFinanceModal(id){
+  const rec = currentData.find(r=>r.ID===id);
+  if(!rec) return;
+  document.getElementById('modalTitle').textContent = rec.CUSTOMER || 'Update Finance';
+  document.getElementById('modalSub').textContent = `${rec.NO_CONTAINER||'-'} · ${fmtDate(rec.BOOKING_DATE)} · Status saat ini: ${rec.STATUS_BAROMETER||'-'}`;
+  const form = document.getElementById('financeForm');
+  form.TOP_HARI.value = rec.TOP_HARI || '';
+  form.TGL_INVOICE_TERBIT.value = toISO(rec.TGL_INVOICE_TERBIT);
+  form.NO_INVOICE.value = rec.NO_INVOICE || '';
+  form.TGL_KIRIM_INVOICE.value = toISO(rec.TGL_KIRIM_INVOICE);
+  form.MODE_KIRIM_INVOICE.value = rec.MODE_KIRIM_INVOICE || '';
+  form.TGL_DITERIMA_CUSTOMER.value = toISO(rec.TGL_DITERIMA_CUSTOMER);
+  form.NILAI_REIMBURST.value = rec.NILAI_REIMBURST || '';
+  form.DPP_JASA.value = rec.DPP_JASA || '';
+  form.TGL_BAYAR.value = toISO(rec.TGL_BAYAR);
+  form.KETERANGAN.value = rec.KETERANGAN || '';
+  form.dataset.id = id;
+  document.getElementById('modalBg').classList.add('show');
 }
+document.getElementById('modalCancel').addEventListener('click', ()=>{
+  document.getElementById('modalBg').classList.remove('show');
+});
+document.getElementById('modalBg').addEventListener('click', (e)=>{
+  if(e.target.id==='modalBg') document.getElementById('modalBg').classList.remove('show');
+});
+document.getElementById('financeForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const form = e.target;
+  const id = form.dataset.id;
+  const data = Object.fromEntries(new FormData(form).entries());
+  const btn = document.getElementById('modalSave');
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Menyimpan...';
+  try{
+    const res = await apiGet('updateFinance', {id, payload: JSON.stringify(data)});
+    if(res.ok){
+      toast('Data finance tersimpan');
+      document.getElementById('modalBg').classList.remove('show');
+      await loadFinanceTable();
+      await loadDashboard();
+    } else {
+      toast('Gagal menyimpan: '+res.error);
+    }
+  }catch(err){ toast('Error: '+err.message); }
+  btn.disabled = false; btn.textContent = 'Simpan';
+});
 
-function jsonpOut_(obj, callback) {
-  const json = JSON.stringify(obj);
-  if (callback) {
-    return ContentService.createTextOutput(callback + '(' + json + ')').setMimeType(ContentService.MimeType.JAVASCRIPT);
+/* ---------------- INPUT HARIAN ---------------- */
+document.getElementById('entryForm').addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  const form = e.target;
+  const submitBtn = form.querySelector('button[type="submit"]');
+  if(submitBtn.disabled) return; // cegah klik dobel
+  const data = Object.fromEntries(new FormData(form).entries());
+  const statusEl = document.getElementById('inputStatus');
+  submitBtn.disabled = true;
+  statusEl.innerHTML = '<span class="spinner"></span> Menyimpan...';
+  try{
+    const res = await apiGet('addEntry', {payload: JSON.stringify(data)});
+    if(res.ok){
+      toast('Shipment tersimpan, status: ⚫ Belum Invoice');
+      form.reset();
+      statusEl.textContent = '';
+      await loadFinanceTable();
+      await loadDashboard();
+    } else {
+      statusEl.textContent = 'Gagal: ' + res.error;
+    }
+  }catch(err){ statusEl.textContent = 'Error: ' + err.message; }
+  submitBtn.disabled = false;
+});
+
+/* ---------------- INIT ---------------- */
+(async function init(){
+  if(API_URL.includes('PASTE_WEB_APP_URL')){
+    toast('Belum terhubung ke server. Isi API_URL di index.html.');
   }
-  return ContentService.createTextOutput(json).setMimeType(ContentService.MimeType.JSON);
-}
-
-function doGet(e) {
-  const p = e.parameter;
-  const action = p.action || 'getData';
-  let result;
-  try {
-    if (action === 'getData') result = getData();
-    else if (action === 'getDashboard') result = getDashboard();
-    else if (action === 'getCustomers') result = getCustomers();
-    else if (action === 'addEntry') result = addEntry(JSON.parse(p.payload));
-    else if (action === 'updateFinance') result = updateFinance(p.id, JSON.parse(p.payload));
-    else if (action === 'deleteEntry') result = deleteEntry(p.id);
-    else result = { ok: false, error: 'Unknown action: ' + action };
-  } catch (err) {
-    result = { ok: false, error: String(err) };
-  }
-  return jsonpOut_(result, p.callback);
-}
+  await Promise.all([loadDashboard(), loadCustomers(), loadFinanceTable()]);
+})();
+</script>
+</body>
+</html>

@@ -396,7 +396,7 @@ function exportToExcel(){
     'Tgl Invoice Terbit': fmtDate(r.TGL_INVOICE_TERBIT),
     'TOP (Hari)': r.TOP_HARI||'',
     'Tgl Jatuh Tempo': fmtDate(r.TGL_DUEDATE),
-    'Aging (Hari)': r.AGING===''?'':r.AGING,
+    'Aging': r.AGING_LABEL||'',
     'DPP Jasa': num_v(r.DPP_JASA),
     'Nilai Reimburst': num_v(r.NILAI_REIMBURST),
     'PPN 1,1%': num_v(r.PPN),
@@ -508,7 +508,7 @@ function renderFinanceTable(){
       <td class="num">${fmtRp(r.TARIF_CUSTOMER)}</td>
       <td>${r.NO_INVOICE||'-'}</td>
       <td>${fmtDate(r.TGL_DUEDATE)}</td>
-      <td class="num">${r.AGING===''?'-':r.AGING}</td>
+      <td>${r.AGING_LABEL || '-'}</td>
       <td class="num">${fmtRp(r.EFFECTIVE_VALUE)}</td>
       <td>
         <button class="btn btn-ghost btn-sm" onclick="openFinanceModal('${r.ID}')">Edit</button>

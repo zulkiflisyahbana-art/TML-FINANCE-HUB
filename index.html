@@ -321,13 +321,20 @@ function fmtDate(d){
   if(!d) return '-';
   const dt = new Date(d);
   if(isNaN(dt)) return '-';
-  return dt.toLocaleDateString('id-ID',{day:'2-digit',month:'short',year:'numeric'});
+  const months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+  const day = String(dt.getUTCDate()).padStart(2,'0');
+  const month = months[dt.getUTCMonth()];
+  const year = dt.getUTCFullYear();
+  return `${day} ${month} ${year}`;
 }
 function toISO(d){
   if(!d) return '';
   const dt = new Date(d);
   if(isNaN(dt)) return '';
-  return dt.toISOString().slice(0,10);
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth()+1).padStart(2,'0');
+  const day = String(dt.getUTCDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
 }
 function statusClass(s){
   if(s==='🟢 LUNAS') return 'st-lunas';

@@ -6,7 +6,7 @@
 <title>TML Finance Hub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" defer></script>
 <style>
   :root{
     --navy:#12283F;
@@ -316,6 +316,7 @@ const API_URL = "https://script.google.com/macros/s/AKfycbyt5i6Ah4gBSneGsJRWXZvd
 
 let currentData = [];
 let currentCustomers = [];
+let lastLoadAt = 0;
 
 function fmtRp(n){
   if(n===''||n===null||n===undefined||isNaN(n)) return '-';
@@ -369,6 +370,13 @@ function toast(msg){
   setTimeout(()=>t.classList.remove('show'), 2600);
 }
 
+function setStatusRetrying(attempt){
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  dot.style.background = '#E28321';
+  text.textContent = `Menyambungkan ulang... (${attempt}/3)`;
+}
+
 function setOnlineStatus(online){
   const dot = document.getElementById('statusDot');
   const text = document.getElementById('statusText');
@@ -384,18 +392,16 @@ function setOnlineStatus(online){
 
 /* --- JSONP request helper (menghindari CORS, sama seperti TML Order Hub) --- */
 let jsonpCounter = 0;
-function apiGet(action, params){
+function apiGetOnce(action, params, timeoutMs){
   return new Promise((resolve, reject)=>{
     const cbName = 'cb_' + (jsonpCounter++) + '_' + Date.now();
     const timeout = setTimeout(()=>{
-      setOnlineStatus(false);
       delete window[cbName];
       script.remove();
       reject(new Error('Timeout: server tidak merespon'));
-    }, 15000);
+    }, timeoutMs || 25000);
     window[cbName] = (data)=>{
       clearTimeout(timeout);
-      setOnlineStatus(!!data && data.ok !== false);
       resolve(data);
       delete window[cbName];
       script.remove();
@@ -403,13 +409,35 @@ function apiGet(action, params){
     const qs = new URLSearchParams({action, callback: cbName, ...params});
     const script = document.createElement('script');
     script.src = API_URL + '?' + qs.toString();
-    script.onerror = ()=>{ clearTimeout(timeout); setOnlineStatus(false); reject(new Error('Gagal terhubung ke server')); };
+    script.onerror = ()=>{ clearTimeout(timeout); reject(new Error('Gagal terhubung ke server')); };
     document.body.appendChild(script);
   });
 }
 
+/* Auto-retry: kalau gagal/timeout, dicoba ulang otomatis sampai 3x.
+   Ini yang mencegah "Gagal terhubung" saat beberapa device buka bersamaan. */
+async function apiGet(action, params){
+  let lastErr;
+  for(let attempt=1; attempt<=3; attempt++){
+    try{
+      const data = await apiGetOnce(action, params, attempt===1 ? 20000 : 30000);
+      setOnlineStatus(!!data && data.ok !== false);
+      return data;
+    }catch(err){
+      lastErr = err;
+      if(attempt < 3){
+        setStatusRetrying(attempt);
+        await new Promise(r=>setTimeout(r, attempt*1200)); // tunggu sebentar lalu coba lagi
+      }
+    }
+  }
+  setOnlineStatus(false);
+  throw lastErr;
+}
+
 /* ---------------- EXPORT EXCEL ---------------- */
 function exportToExcel(){
+  if(typeof XLSX === 'undefined'){ toast('Modul Excel masih dimuat, coba lagi 2 detik'); return; }
   if(!currentData || currentData.length===0){ toast('Belum ada data untuk didownload'); return; }
   const rows = currentData.map(r=>({
     'Status': (r.STATUS_BAROMETER||'').replace(/[^\x00-\x7F]/g,'').trim(),
@@ -454,63 +482,60 @@ document.querySelectorAll('nav.tabs button').forEach(btn=>{
 
 document.getElementById('todayLabel').textContent = new Date().toLocaleDateString('id-ID',{weekday:'long', day:'2-digit', month:'long', year:'numeric'});
 
-/* ---------------- LOAD DASHBOARD ---------------- */
-async function loadDashboard(){
+/* ---------------- LOAD SEMUA DALAM 1 REQUEST ----------------
+   Sebelumnya halaman mengirim 3 request terpisah (dashboard, data,
+   customer) dan sheet dibaca 2x. Sekarang cukup 1 request -> reload
+   jauh lebih cepat & tidak bentrok saat dibuka banyak device. */
+async function loadAll(){
+  lastLoadAt = Date.now();
   try{
-    const res = await apiGet('getDashboard', {});
-    if(!res.ok){ toast('Gagal memuat dashboard: '+res.error); return; }
-    const {kpi, perCustomer, statusCount} = res;
-    const kpiGrid = document.getElementById('kpiGrid');
-    kpiGrid.innerHTML = `
-      <div class="kpi"><div class="label">Total Tagihan</div><div class="value">${fmtRp(kpi.totalTagihan)}</div></div>
-      <div class="kpi warn"><div class="label">Outstanding</div><div class="value">${fmtRp(kpi.outstanding)}</div></div>
-      <div class="kpi mid"><div class="label">Overdue Berat</div><div class="value">${fmtRp(kpi.overdueBerat)}</div></div>
-      <div class="kpi info"><div class="label">Belum Invoice</div><div class="value">${kpi.belumInvoice} job</div></div>
-      <div class="kpi ok"><div class="label">Sudah Lunas</div><div class="value">${fmtRp(kpi.lunas)}</div></div>
-    `;
-    const legendWrap = document.getElementById('statusLegendWrap');
-    legendWrap.innerHTML = Object.entries(statusCount).map(([s,c])=>
-      `<span class="chip ${statusClass(s)}">${s}<span class="badge-count">${c}</span></span>`
-    ).join('');
-
-    const tbody = document.querySelector('#custTable tbody');
-    if(perCustomer.length===0){
-      tbody.innerHTML = `<tr><td colspan="6" class="empty">Belum ada data</td></tr>`;
-    } else {
-      tbody.innerHTML = perCustomer
-        .sort((a,b)=>b.outstanding-a.outstanding)
-        .map(c=>`<tr>
-          <td>${c.customer}</td>
-          <td class="num">${c.jumlahShipment}</td>
-          <td class="num">${fmtRp(c.totalTagihan)}</td>
-          <td class="num">${fmtRp(c.outstanding)}</td>
-          <td class="num">${fmtRp(c.overdueBerat)}</td>
-          <td class="num">${c.maxAging || '-'}</td>
-        </tr>`).join('');
-    }
-  }catch(err){ toast('Error: '+err.message); }
-}
-
-/* ---------------- LOAD CUSTOMERS (autocomplete) ---------------- */
-async function loadCustomers(){
-  try{
-    const res = await apiGet('getCustomers', {});
-    if(res.ok){
+    const res = await apiGet('getBootstrap', {});
+    if(!res || !res.ok){ toast('Gagal memuat data: '+((res&&res.error)||'tidak diketahui')); return; }
+    currentData = res.data || [];
+    renderFinanceTable();
+    renderDashboard(res);
+    if(res.customers){
       currentCustomers = res.customers;
       document.getElementById('customerList').innerHTML =
         res.customers.map(c=>`<option value="${c.name}">`).join('');
     }
-  }catch(err){}
+  }catch(err){ toast('Tidak bisa terhubung: '+err.message); }
 }
 
-/* ---------------- LOAD FINANCE TABLE ---------------- */
-async function loadFinanceTable(){
-  try{
-    const res = await apiGet('getData', {});
-    if(!res.ok){ toast('Gagal memuat data: '+res.error); return; }
-    currentData = res.data;
-    renderFinanceTable();
-  }catch(err){ toast('Error: '+err.message); }
+/* ---------------- RENDER DASHBOARD ---------------- */
+function renderDashboard(res){
+  const {kpi, perCustomer, statusCount} = res;
+  if(!kpi) return;
+  const kpiGrid = document.getElementById('kpiGrid');
+  kpiGrid.innerHTML = `
+    <div class="kpi"><div class="label">Total Tagihan</div><div class="value">${fmtRp(kpi.totalTagihan)}</div></div>
+    <div class="kpi warn"><div class="label">Outstanding</div><div class="value">${fmtRp(kpi.outstanding)}</div></div>
+    <div class="kpi mid"><div class="label">Overdue Berat</div><div class="value">${fmtRp(kpi.overdueBerat)}</div></div>
+    <div class="kpi info"><div class="label">Belum Invoice</div><div class="value">${kpi.belumInvoice} job</div></div>
+    <div class="kpi ok"><div class="label">Sudah Lunas</div><div class="value">${fmtRp(kpi.lunas)}</div></div>
+  `;
+  const legendWrap = document.getElementById('statusLegendWrap');
+  legendWrap.innerHTML = Object.entries(statusCount||{}).map(([s,c])=>
+    `<span class="chip ${statusClass(s)}">${s}<span class="badge-count">${c}</span></span>`
+  ).join('');
+
+  const tbody = document.querySelector('#custTable tbody');
+  const list = perCustomer || [];
+  if(list.length===0){
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">Belum ada data</td></tr>`;
+  } else {
+    tbody.innerHTML = list
+      .slice()
+      .sort((a,b)=>b.outstanding-a.outstanding)
+      .map(c=>`<tr>
+        <td>${c.customer}</td>
+        <td class="num">${c.jumlahShipment}</td>
+        <td class="num">${fmtRp(c.totalTagihan)}</td>
+        <td class="num">${fmtRp(c.outstanding)}</td>
+        <td class="num">${fmtRp(c.overdueBerat)}</td>
+        <td class="num">${c.maxAging || '-'}</td>
+      </tr>`).join('');
+  }
 }
 
 function renderFinanceTable(){
@@ -559,8 +584,7 @@ async function deleteEntryRow(id, custName){
     const res = await apiGet('deleteEntry', {id});
     if(res.ok){
       toast('Data dihapus');
-      await loadFinanceTable();
-      await loadDashboard();
+      await loadAll();
     } else {
       toast('Gagal menghapus: '+res.error);
     }
@@ -608,8 +632,7 @@ document.getElementById('financeForm').addEventListener('submit', async (e)=>{
     if(res.ok){
       toast('Data finance tersimpan');
       document.getElementById('modalBg').classList.remove('show');
-      await loadFinanceTable();
-      await loadDashboard();
+      await loadAll();
     } else {
       toast('Gagal menyimpan: '+res.error);
     }
@@ -633,8 +656,7 @@ document.getElementById('entryForm').addEventListener('submit', async (e)=>{
       toast('Shipment tersimpan, status: ⚫ Belum Invoice');
       form.reset();
       statusEl.textContent = '';
-      await loadFinanceTable();
-      await loadDashboard();
+      await loadAll();
     } else {
       statusEl.textContent = 'Gagal: ' + res.error;
     }
@@ -642,12 +664,20 @@ document.getElementById('entryForm').addEventListener('submit', async (e)=>{
   submitBtn.disabled = false;
 });
 
+/* Auto-segarkan saat tab kembali dibuka (min. jeda 30 detik),
+   supaya data antar-laptop/HP tetap sinkron tanpa reload manual. */
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState === 'visible' && Date.now()-lastLoadAt > 30000){
+    loadAll();
+  }
+});
+
 /* ---------------- INIT ---------------- */
 (async function init(){
   if(API_URL.includes('PASTE_WEB_APP_URL')){
     toast('Belum terhubung ke server. Isi API_URL di index.html.');
   }
-  await Promise.all([loadDashboard(), loadCustomers(), loadFinanceTable()]);
+  await loadAll();
 })();
 </script>
 </body>

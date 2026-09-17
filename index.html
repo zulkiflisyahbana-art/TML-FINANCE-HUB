@@ -264,8 +264,9 @@
     <div class="table-wrap">
       <table id="financeTable">
         <thead><tr>
-          <th>Status</th><th>Customer</th><th>Container</th><th>Tarif Cust.</th><th>No. Invoice</th>
-          <th>Jatuh Tempo</th><th>Aging</th><th>Total Tagihan</th><th></th>
+          <th>Status</th><th>No. BL</th><th>Nama Customer</th><th>Invoice</th><th>No. Container</th>
+          <th>Tarif Customer</th><th>Jatuh Tempo</th><th>Aging</th><th>Total Tagihan</th>
+          <th>Tagihan Diterima</th><th>Selisih</th><th></th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -281,6 +282,8 @@
     <div class="sub" id="modalSub"></div>
     <form id="financeForm">
       <div class="grid2">
+        <div class="field"><label>No. BL / DO</label><input type="text" name="NO_BL_DO"></div>
+        <div class="field"><label>No. Container</label><input type="text" name="NO_CONTAINER"></div>
         <div class="field"><label>TOP (Hari, atau isi "CASH")</label><input type="text" name="TOP_HARI"></div>
         <div class="field"><label>Tgl Invoice Terbit</label><input type="date" name="TGL_INVOICE_TERBIT"></div>
         <div class="field"><label>No. Invoice</label><input type="text" name="NO_INVOICE"></div>
@@ -292,6 +295,7 @@
         <div class="field"><label>Nilai Reimburst (Rp)</label><input type="number" name="NILAI_REIMBURST"></div>
         <div class="field"><label>DPP Jasa (Rp)</label><input type="number" name="DPP_JASA"></div>
         <div class="field"><label>Tgl Pembayaran Customer</label><input type="date" name="TGL_BAYAR"></div>
+        <div class="field"><label>Tagihan Diterima (Rp)</label><input type="number" name="NILAI_DITERIMA"></div>
         <div class="field span2"><label>Keterangan</label><textarea name="KETERANGAN" rows="2"></textarea></div>
       </div>
       <div class="modal-actions">
@@ -335,6 +339,20 @@ function toISO(d){
   const m = String(dt.getUTCMonth()+1).padStart(2,'0');
   const day = String(dt.getUTCDate()).padStart(2,'0');
   return `${y}-${m}-${day}`;
+}
+function fmtSelisih(v){
+  if(v===''||v===null||v===undefined||isNaN(v)) return '-';
+  const n = Math.round(v);
+  if(n===0) return 'Lunas penuh';
+  if(n>0) return 'Kurang ' + n.toLocaleString('id-ID');
+  return 'Lebih ' + Math.abs(n).toLocaleString('id-ID');
+}
+function selisihStyle(v){
+  if(v===''||v===null||v===undefined||isNaN(v)) return '';
+  const n = Math.round(v);
+  if(n===0) return 'color:#1E8E5A; font-weight:600';
+  if(n>0) return 'color:#B7302A; font-weight:600';
+  return 'color:#9A7B06; font-weight:600';
 }
 function statusClass(s){
   if(s==='🟢 LUNAS') return 'st-lunas';
@@ -395,19 +413,22 @@ function exportToExcel(){
   if(!currentData || currentData.length===0){ toast('Belum ada data untuk didownload'); return; }
   const rows = currentData.map(r=>({
     'Status': (r.STATUS_BAROMETER||'').replace(/[^\x00-\x7F]/g,'').trim(),
-    'Booking Date': fmtDate(r.BOOKING_DATE),
-    'Customer': r.CUSTOMER||'',
+    'No. BL': r.NO_BL_DO||'',
+    'Nama Customer': r.CUSTOMER||'',
+    'Invoice': r.NO_INVOICE||'',
     'No. Container': r.NO_CONTAINER||'',
     'Tarif Customer': num_v(r.TARIF_CUSTOMER),
-    'No. Invoice': r.NO_INVOICE||'',
+    'Jatuh Tempo': fmtDate(r.TGL_DUEDATE),
+    'Aging': r.AGING_LABEL||'',
+    'Total Tagihan': num_v(r.EFFECTIVE_VALUE),
+    'Tagihan Diterima': num_v(r.NILAI_DITERIMA),
+    'Selisih': num_v(r.SELISIH),
+    'Booking Date': fmtDate(r.BOOKING_DATE),
     'Tgl Invoice Terbit': fmtDate(r.TGL_INVOICE_TERBIT),
     'TOP (Hari)': r.TOP_HARI||'',
-    'Tgl Jatuh Tempo': fmtDate(r.TGL_DUEDATE),
-    'Aging': r.AGING_LABEL||'',
     'DPP Jasa': num_v(r.DPP_JASA),
     'Nilai Reimburst': num_v(r.NILAI_REIMBURST),
     'PPN 1,1%': num_v(r.PPN),
-    'Total Tagihan': num_v(r.EFFECTIVE_VALUE),
     'Tgl Bayar': fmtDate(r.TGL_BAYAR),
     'Keterangan': r.KETERANGAN||'',
   }));
@@ -504,19 +525,22 @@ function renderFinanceTable(){
   });
   const tbody = document.querySelector('#financeTable tbody');
   if(rows.length===0){
-    tbody.innerHTML = `<tr><td colspan="9" class="empty">Tidak ada data yang cocok</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="empty">Tidak ada data yang cocok</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map(r=>`
     <tr>
       <td><span class="chip ${statusClass(r.STATUS_BAROMETER)}">${r.STATUS_BAROMETER||'-'}</span></td>
+      <td>${r.NO_BL_DO||'-'}</td>
       <td>${r.CUSTOMER||'-'}</td>
+      <td>${r.NO_INVOICE||'-'}</td>
       <td>${r.NO_CONTAINER||'-'}</td>
       <td class="num">${fmtRp(r.TARIF_CUSTOMER)}</td>
-      <td>${r.NO_INVOICE||'-'}</td>
       <td>${fmtDate(r.TGL_DUEDATE)}</td>
       <td>${r.AGING_LABEL || '-'}</td>
       <td class="num">${fmtRp(r.EFFECTIVE_VALUE)}</td>
+      <td class="num">${fmtRp(r.NILAI_DITERIMA)}</td>
+      <td class="num" style="${selisihStyle(r.SELISIH)}">${fmtSelisih(r.SELISIH)}</td>
       <td>
         <button class="btn btn-ghost btn-sm" onclick="openFinanceModal('${r.ID}')">Edit</button>
         <button class="btn btn-ghost btn-sm" style="color:#B7302A; border-color:#F0C6C4" onclick="deleteEntryRow('${r.ID}','${(r.CUSTOMER||'').replace(/'/g,"")}')">Hapus</button>
@@ -558,6 +582,9 @@ function openFinanceModal(id){
   form.NILAI_REIMBURST.value = rec.NILAI_REIMBURST || '';
   form.DPP_JASA.value = rec.DPP_JASA || '';
   form.TGL_BAYAR.value = toISO(rec.TGL_BAYAR);
+  form.NO_BL_DO.value = rec.NO_BL_DO || '';
+  form.NO_CONTAINER.value = rec.NO_CONTAINER || '';
+  form.NILAI_DITERIMA.value = rec.NILAI_DITERIMA || '';
   form.KETERANGAN.value = rec.KETERANGAN || '';
   form.dataset.id = id;
   document.getElementById('modalBg').classList.add('show');

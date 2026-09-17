@@ -265,7 +265,7 @@
       <table id="financeTable">
         <thead><tr>
           <th>Status</th><th>No. BL</th><th>Nama Customer</th><th>Invoice</th><th>No. Container</th>
-          <th>Tarif Customer</th><th>Jatuh Tempo</th><th>Aging</th><th>Total Tagihan</th>
+          <th>Reimbursement</th><th>Tagihan Trucking</th><th>Jatuh Tempo</th><th>Aging</th><th>Total Tagihan</th>
           <th>Tagihan Diterima</th><th>Selisih</th><th></th>
         </tr></thead>
         <tbody></tbody>
@@ -417,7 +417,8 @@ function exportToExcel(){
     'Nama Customer': r.CUSTOMER||'',
     'Invoice': r.NO_INVOICE||'',
     'No. Container': r.NO_CONTAINER||'',
-    'Tarif Customer': num_v(r.TARIF_CUSTOMER),
+    'Reimbursement': num_v(r.NILAI_REIMBURST),
+    'Tagihan Trucking': num_v(r.TARIF_CUSTOMER),
     'Jatuh Tempo': fmtDate(r.TGL_DUEDATE),
     'Aging': r.AGING_LABEL||'',
     'Total Tagihan': num_v(r.EFFECTIVE_VALUE),
@@ -427,7 +428,6 @@ function exportToExcel(){
     'Tgl Invoice Terbit': fmtDate(r.TGL_INVOICE_TERBIT),
     'TOP (Hari)': r.TOP_HARI||'',
     'DPP Jasa': num_v(r.DPP_JASA),
-    'Nilai Reimburst': num_v(r.NILAI_REIMBURST),
     'PPN 1,1%': num_v(r.PPN),
     'Tgl Bayar': fmtDate(r.TGL_BAYAR),
     'Keterangan': r.KETERANGAN||'',
@@ -525,7 +525,7 @@ function renderFinanceTable(){
   });
   const tbody = document.querySelector('#financeTable tbody');
   if(rows.length===0){
-    tbody.innerHTML = `<tr><td colspan="12" class="empty">Tidak ada data yang cocok</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="13" class="empty">Tidak ada data yang cocok</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map(r=>`
@@ -535,6 +535,7 @@ function renderFinanceTable(){
       <td>${r.CUSTOMER||'-'}</td>
       <td>${r.NO_INVOICE||'-'}</td>
       <td>${r.NO_CONTAINER||'-'}</td>
+      <td class="num">${fmtRp(r.NILAI_REIMBURST)}</td>
       <td class="num">${fmtRp(r.TARIF_CUSTOMER)}</td>
       <td>${fmtDate(r.TGL_DUEDATE)}</td>
       <td>${r.AGING_LABEL || '-'}</td>
